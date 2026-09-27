@@ -71,12 +71,43 @@ export function issueAccessToken({ userId, orgId, role, permVersion }, secret) {
 // `node scripts/check-jwt.js` is the public test suite for this function.
 // ---------------------------------------------------------------------------
 export function verifyAccessToken(token, secret) {
-  // YOURS TO WRITE. Every failure mode listed above must be a 401 UNAUTHENTICATED.
-  // `node scripts/check-jwt.js` is the public suite for this function.
-  throw Object.assign(
-    new Error('TODO: server/auth.js — verifyAccessToken() is yours to write (AUTH-DATA-MODEL.md §10).'),
-    { code: 'NOT_IMPLEMENTED' }
-  );
+  const parts = String(token ?? '').split('.');
+  if (parts.length !== 3) throw unauthenticated('malformed token');
+
+  const [h, p, s] = parts;
+
+  let header;
+  try {
+    header = JSON.parse(unb64(h).toString('utf8'));
+  } catch {
+    throw unauthenticated('malformed token header');
+  }
+
+  // Pin the algorithm. NEVER trust the header's own claim about how it was signed —
+  // this is where "alg: none" and algorithm-substitution attacks are stopped.
+  if (header.alg !== ALG || header.typ !== 'JWT') {
+    throw unauthenticated('unsupported token algorithm');
+  }
+
+  const expected = createHmac('sha256', secret).update(`${h}.${p}`).digest();
+  const actual = unb64(s);
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+    throw unauthenticated('bad signature');
+  }
+
+  let claims;
+  try {
+    claims = JSON.parse(unb64(p).toString('utf8'));
+  } catch {
+    throw unauthenticated('malformed token payload');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof claims.exp !== 'number' || claims.exp <= now) throw unauthenticated('token expired');
+  if (claims.iss !== ISS || claims.aud !== AUD) throw unauthenticated('bad token issuer or audience');
+  if (!claims.jti) throw unauthenticated('token has no jti');
+
+  return claims;
 }
 
 
